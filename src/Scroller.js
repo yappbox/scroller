@@ -15,7 +15,8 @@
 var Scroller;
 
 (function() {
-	
+	var NOOP = function(){};
+
 	/**
 	 * A pure logic 'component' for 'virtual' scrolling/zooming.
 	 */
@@ -53,7 +54,12 @@ var Scroller;
 			minZoom: 0.5,
 
 			/** Maximum zoom level */
-			maxZoom: 3
+			maxZoom: 3,
+
+			/** Callback that is fired on the later of touch end or deceleration end,
+				provided that another scrolling action has not begun. Used to know
+				when to fade out a scrollbar. */
+			scrollingComplete: NOOP
 			
 		};
 
@@ -99,6 +105,9 @@ var Scroller;
 
 		/** {Boolean} Whether a touch event sequence is in progress */
 		__isTracking: false,
+
+		/** {Boolean} Whether a deceleration animation went to completion. */
+		__didDecelerationComplete: false,
 
 		/**
 		 * {Boolean} Whether a gesture zoom/rotate event is in progress. Activates when
@@ -616,16 +625,21 @@ var Scroller;
 			
 			var self = this;
 
+			// Reset interruptedAnimation flag
+			self.__interruptedAnimation = true;
+
 			// Stop deceleration
 			if (self.__isDecelerating) {
 				core.effect.Animate.stop(self.__isDecelerating);
 				self.__isDecelerating = false;
+				self.__interruptedAnimation = true;
 			}
 
 			// Stop animation
 			if (self.__isAnimating) {
 				core.effect.Animate.stop(self.__isAnimating);
 				self.__isAnimating = false;
+				self.__interruptedAnimation = true;
 			}
 
 			// Use center point when dealing with two fingers
@@ -662,6 +676,9 @@ var Scroller;
 
 			// Reset tracking flag
 			self.__isTracking = true;
+
+			// Reset deceleration complete flag
+			self.__didDecelerationComplete = false;
 
 			// Dragging starts directly with two fingers, otherwise lazy with an offset
 			self.__isDragging = !isSingleTouch;
@@ -848,6 +865,9 @@ var Scroller;
 				positions.push(self.__scrollLeft, self.__scrollTop, timeStamp);
 
 				self.__isDragging = (self.__enableScrollX || self.__enableScrollY) && (distanceX >= minimumTrackingForDrag || distanceY >= minimumTrackingForDrag);
+				if (self.__isDragging) {
+					self.__interruptedAnimation = false;
+				}
 
 			}
 
@@ -925,13 +945,15 @@ var Scroller;
 							
 							// Deactivate pull-to-refresh when decelerating
 							if (!self.__refreshActive) {
-
 								self.__startDeceleration(timeStamp);
-
 							}
 						}
+					} else {
+						self.options.scrollingComplete();
 					}
-				}
+				} else if ((timeStamp - self.__lastTouchMove) > 100) {
+					self.options.scrollingComplete();
+	 			}
 			}
 
 			// If this was a slower move it is per default non decelerated, but this
@@ -952,7 +974,10 @@ var Scroller;
 					}
 					
 				} else {
-					
+
+					if (self.__interruptedAnimation || self.__isDragging) {
+						self.options.scrollingComplete();
+					}
 					self.scrollTo(self.__scrollLeft, self.__scrollTop, true, self.__zoomLevel);
 					
 					// Directly signalize deactivation (nothing todo on refresh?)
@@ -1036,6 +1061,9 @@ var Scroller;
 				var completed = function(renderedFramesPerSecond, animationId, wasFinished) {
 					if (animationId === self.__isAnimating) {
 						self.__isAnimating = false;
+					}
+					if (self.__didDecelerationComplete || wasFinished) {
+						self.options.scrollingComplete();
 					}
 					
 					if (self.options.zooming) {
@@ -1131,11 +1159,18 @@ var Scroller;
 			// Detect whether it's still worth to continue animating steps
 			// If we are already slow enough to not being user perceivable anymore, we stop the whole process here.
 			var verify = function() {
-				return Math.abs(self.__decelerationVelocityX) >= minVelocityToKeepDecelerating || Math.abs(self.__decelerationVelocityY) >= minVelocityToKeepDecelerating;
+				var shouldContinue = Math.abs(self.__decelerationVelocityX) >= minVelocityToKeepDecelerating || Math.abs(self.__decelerationVelocityY) >= minVelocityToKeepDecelerating;
+				if (!shouldContinue) {
+					self.__didDecelerationComplete = true;
+				}
+				return shouldContinue;
 			};
 
 			var completed = function(renderedFramesPerSecond, animationId, wasFinished) {
 				self.__isDecelerating = false;
+				if (self.__didDecelerationComplete) {
+					self.options.scrollingComplete();
+				}
 
 				// Animate to grid when snapping is active, otherwise just fix out-of-boundary positions
 				self.scrollTo(self.__scrollLeft, self.__scrollTop, self.options.snapping);
